@@ -715,6 +715,11 @@ def _attr_or_key(obj: Any, name: str) -> Any:
     return getattr(obj, name, None)
 
 
+async def _maybe_await(value: Any) -> Any:
+    """Return the result of an OpenWebUI call that is sync in some versions and async in others."""
+    return await value if inspect.isawaitable(value) else value
+
+
 class OwuiFiles:
     """Access to OpenWebUI's internal file storage.
 
@@ -745,10 +750,10 @@ class OwuiFiles:
             from open_webui.models.files import Files
             from open_webui.storage.provider import Storage
 
-            model = Files.get_file_by_id(file_id)
+            model = await _maybe_await(Files.get_file_by_id(file_id))
             if model is None:
                 raise OwuiFilesError(f"file {file_id} not found")
-            path = Storage.get_file(model.path)
+            path = await _maybe_await(Storage.get_file(model.path))
             data = await asyncio.to_thread(Path(path).read_bytes)
         except OwuiFilesError:
             raise
@@ -774,7 +779,7 @@ class OwuiFiles:
             from open_webui.routers import files as files_router
             from starlette.datastructures import Headers
 
-            user = Users.get_user_by_id(str(self._user.get("id")))
+            user = await _maybe_await(Users.get_user_by_id(str(self._user.get("id"))))
             upload = UploadFile(
                 file=io.BytesIO(data),
                 filename=name,
@@ -811,10 +816,10 @@ class OwuiFiles:
             from open_webui.models.files import Files
             from open_webui.storage.provider import Storage
 
-            model = Files.get_file_by_id(file_id)
+            model = await _maybe_await(Files.get_file_by_id(file_id))
             if model is not None:
-                Storage.delete_file(model.path)
-            Files.delete_file_by_id(file_id)
+                await _maybe_await(Storage.delete_file(model.path))
+            await _maybe_await(Files.delete_file_by_id(file_id))
         # Broad on purpose: OpenWebUI internals raise arbitrary exception types across versions.
         except Exception as err:
             raise OwuiFilesError(f"cannot delete {file_id}") from err

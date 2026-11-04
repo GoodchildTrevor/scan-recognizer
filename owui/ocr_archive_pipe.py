@@ -712,6 +712,11 @@ def _attr_or_key(obj: Any, name: str) -> Any:
     return getattr(obj, name, None)
 
 
+async def _maybe_await(value: Any) -> Any:
+    """Return the result of an OpenWebUI call that is sync in some versions and async in others."""
+    return await value if inspect.isawaitable(value) else value
+
+
 class OwuiFiles:
     """Access to OpenWebUI's internal file storage.
 
@@ -742,10 +747,10 @@ class OwuiFiles:
             from open_webui.models.files import Files
             from open_webui.storage.provider import Storage
 
-            model = Files.get_file_by_id(file_id)
+            model = await _maybe_await(Files.get_file_by_id(file_id))
             if model is None:
                 raise OwuiFilesError(f"file {file_id} not found")
-            path = Storage.get_file(model.path)
+            path = await _maybe_await(Storage.get_file(model.path))
             data = await asyncio.to_thread(Path(path).read_bytes)
         except OwuiFilesError:
             raise
@@ -771,7 +776,7 @@ class OwuiFiles:
             from open_webui.routers import files as files_router
             from starlette.datastructures import Headers
 
-            user = Users.get_user_by_id(str(self._user.get("id")))
+            user = await _maybe_await(Users.get_user_by_id(str(self._user.get("id"))))
             upload = UploadFile(
                 file=io.BytesIO(data),
                 filename=name,
@@ -808,10 +813,10 @@ class OwuiFiles:
             from open_webui.models.files import Files
             from open_webui.storage.provider import Storage
 
-            model = Files.get_file_by_id(file_id)
+            model = await _maybe_await(Files.get_file_by_id(file_id))
             if model is not None:
-                Storage.delete_file(model.path)
-            Files.delete_file_by_id(file_id)
+                await _maybe_await(Storage.delete_file(model.path))
+            await _maybe_await(Files.delete_file_by_id(file_id))
         # Broad on purpose: OpenWebUI internals raise arbitrary exception types across versions.
         except Exception as err:
             raise OwuiFilesError(f"cannot delete {file_id}") from err
@@ -3292,9 +3297,22 @@ class Pipe:
         """Expose the pipe as one model."""
         return [{"id": "ocr_archive", "name": MESSAGES_RU["model_name"]}]
 
+    def _allowed_ids(self) -> set[str]:
+        """IDs from the valve, tolerant to the OpenWebUI form: one comma-separated string,
+        quotes and spaces around the values."""
+        ids: set[str] = set()
+        for value in self.valves.allowed_user_ids:
+            ids.update(part.strip().strip("\"'") for part in str(value).split(","))
+        ids.discard("")
+        return ids
+
     def _is_allowed(self, user: Mapping[str, Any]) -> bool:
-        user_id = user.get("id")
-        return bool(user_id) and str(user_id) in set(self.valves.allowed_user_ids)
+        user_id = str(user.get("id") or "")
+        if user_id and user_id in self._allowed_ids():
+            return True
+        # The ID goes to the server log only, never into the chat (section 3.3).
+        logger.warning("access denied: user id %r is not in allowed_user_ids", user_id)
+        return False
 
     def _make_client(self) -> httpx.AsyncClient:
         # trust_env=False: the backend is on the Docker network; HTTP_PROXY of the OpenWebUI

@@ -6,7 +6,14 @@ import json
 
 import pytest
 
-from tests.owui.helpers import Emitter, FakeService, PipeForTest, op, run_pipe
+from tests.owui.helpers import (
+    USER_ID,
+    Emitter,
+    FakeService,
+    PipeForTest,
+    op,
+    run_pipe,
+)
 
 pytestmark = pytest.mark.p3
 
@@ -209,3 +216,11 @@ def test_plural_forms() -> None:
         "22 страницы",
         "112 страниц",
     ]
+
+
+async def test_allowed_user_ids_tolerates_the_valves_form() -> None:
+    pipe = PipeForTest(FakeService())
+    pipe.valves.allowed_user_ids = [f' "{USER_ID}" , other-user']
+    assert await run_pipe(pipe, "что в очереди") != op.msg("access_denied")
+    pipe.valves.allowed_user_ids = ["other-user"]
+    assert await run_pipe(pipe, "что в очереди") == op.msg("access_denied")
