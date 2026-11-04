@@ -1,0 +1,88 @@
+data_dir: /data                      # container path; host directory on a local disk, section 12.4
+db_path: /data/state.db
+export_dir: /export                  # container path of the export folder, section 9.7
+max_upload_mb: 1024
+
+api:
+  host: 172.17.0.1                   # Docker bridge address: the pipe in OpenWebUI is the client (section 3.3)
+  port: 8090
+
+vlm:
+  base_url: http://127.0.0.1:8080/v1
+  model: qwen3.6-35b-a3b
+  weights:                           # declared at install time; part of the OCR version, section 6.11
+    gguf_file: <model file name>
+    gguf_sha256: <sha256 of the model file>
+    mmproj_file: mmproj-BF16.gguf
+    mmproj_sha256: <sha256 of the mmproj file>
+  timeout_s: 900
+  max_backoff_s: 300
+
+profiles:
+  pass1:  {prompt: transcribe_v1, image_long_side: 2000, max_tokens: 6000, temperature: 0.0, top_p: 1.0, top_logprobs: 1}
+  pass2:  {prompt: transcribe_v1, image_long_side: 2800, max_tokens: 6000, temperature: 0.0, top_p: 1.0, top_logprobs: 1, split: auto}   # split: auto (section 6.7) | never
+  region: {prompt: fragment_v1,   image_long_side: 2800, max_tokens: 3000, temperature: 0.0, top_p: 1.0, top_logprobs: 1}
+
+checks:
+  empty_min_chars: 50
+  line_abs_tolerance: 3
+  line_ratio_tolerance: 0.15
+  low_conf_token_p: 0.6
+  digit_token_p: 0.9
+  split_min_lines: 40                # also part of the OCR version of pass2
+  split_gap_max_ink: 0.001           # also part of the OCR version of pass2
+
+decide:
+  candidate: pass2                   # confirmed on the gold set, section 15.1
+  flags: [broken, unverified, digits_disagreement, table_mismatch, line_count_mismatch, markers,
+          pass_diff, low_conf_digit, low_conf_text]
+  hard_markers: ["неразб.", "рук.: неразб.", "таблица: проверить", "формула: проверить", "обрезано"]
+
+signals:                             # starting values, tuned on the pilot (section 15.2)
+  min_diff_words: 4                  # flag when the counter is >= the threshold
+  min_low_digits: 1
+  min_low_letters: 5
+
+hints:                               # section 6.13
+  merge_gap_words: 3                 # neighbouring pass differences on one line closer than this are merged
+
+fast_track:                          # section 6.1
+  enabled: true
+  max_image_area: 0.05               # share of the page area covered by raster images
+  min_chars: 20
+  max_bad_char_ratio: 0.01
+  math_font_hints: ["Math", "MT Extra", "Euclid", "CMMI", "CMSY", "CMEX"]
+
+review:                              # sections 8 and 15.3; not part of the rules version
+  page_long_side: 2000               # page image in the review window
+  image_format: jpeg
+  jpeg_quality: 85
+  load_guideline: 0.10               # flagged share above this triggers a warning, not a cap
+  stale_draft_days: 3                # drafts older than this are listed in the summary as a reminder
+  default_page_review_s: 60          # review time estimate before the first reviews
+
+worker:
+  page_concurrency: 1
+  poll_interval_s: 5
+
+render_cache:
+  max_gb: 5
+
+build:
+  pandoc_path: pandoc
+  reference_docx: ocr_archive/assets/reference.docx
+  lua_filter: ocr_archive/assets/html_tables.lua
+  font_path: ocr_archive/assets/fonts/DejaVuSans.ttf
+  docx_min_similarity: 0.99
+  keep_versions: 2                   # final builds
+  keep_drafts: 1                     # draft builds, section 9.6
+
+chunks:
+  max_chars: 1200
+
+ingester:
+  enabled: false
+  base_url: http://127.0.0.1:8000
+  collection: archive
+  timeout_s: 600
+  extra_payload: {dataset: ocr-archive}

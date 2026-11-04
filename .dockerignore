@@ -1,0 +1,16 @@
+.venv
+.git
+.idea
+.mypy_cache
+.ruff_cache
+.pytest_cache
+__pycache__
+*.pyc
+tests
+prototype
+owui
+data
+export
+reports
+.env
+config.yaml

@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocr-archive"
+version = "0.1.0"
+description = "OCR of a scanned archive with Qwen3.6 via llama-server, review in OpenWebUI, searchable PDF and DOCX output."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2",
+    "pydantic-settings",
+    "typer",
+    "httpx",
+    "pymupdf",
+    "pillow",
+    "numpy",
+    "rapidfuzz",
+    "python-multipart",
+    "python-ulid",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "types-PyYAML"]
+
+[project.scripts]
+ocr = "ocr_archive.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ocr_archive*"]
+
+[tool.setuptools.package-data]
+ocr_archive = [
+    "db/schema.sql",
+    "vlm/prompts/*.md",
+    "assets/*",
+    "assets/fonts/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "p1: phase P1, one page",
+    "p2: phase P2, pipeline",
+    "p3: phase P3, review",
+    "p4: phase P4, build",
+    "p5: phase P5, pilot",
+    "p6: phase P6, ingest",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003", "SIM114"]
+
+[tool.mypy]
+python_version = "3.12"
+platform = "linux"
+files = ["ocr_archive"]
+strict = false
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true

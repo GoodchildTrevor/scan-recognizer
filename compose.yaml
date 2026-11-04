@@ -1,0 +1,39 @@
+# api and worker from one image, host network (section 12.4).
+# The data directory must be on a local Linux disk: flock and SQLite WAL do not work on NFS.
+
+x-common: &common
+  image: ocr-archive:latest
+  network_mode: host
+  env_file: .env
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *common
+    build: .
+    command: ["ocr", "serve"]
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - /srv/ocr-archive/data:/data
+      - /srv/ocr-archive/inbox:/inbox:ro
+    healthcheck:
+      # curl is not in the image; OCR_HEALTH_URL follows api.host/api.port of config.yaml.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen(os.environ.get('OCR_HEALTH_URL', 'http://172.17.0.1:8090/health'), timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    <<: *common
+    command: ["ocr", "worker"]
+    init: true
+    stop_grace_period: 30s
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - /srv/ocr-archive/data:/data
+      - /srv/ocr-archive/inbox:/inbox:ro
+      - /srv/ocr-archive/export:/export
