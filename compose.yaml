@@ -8,6 +8,16 @@ x-common: &common
   env_file: .env
   restart: unless-stopped
 
+# The config file must exist before the first start: otherwise Docker would create an empty
+# directory named config.yaml on the host and the services would fail with "Is a directory".
+x-config: &config
+  type: bind
+  source: ./config.yaml
+  target: /app/config.yaml
+  read_only: true
+  bind:
+    create_host_path: false
+
 networks:
   ollama_network:
     external: true                 # the network OpenWebUI is attached to
@@ -21,7 +31,7 @@ services:
     networks:
       - ollama_network
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      - *config
       - /srv/ocr-archive/data:/data
       - /srv/ocr-archive/inbox:/inbox:ro
     healthcheck:
@@ -43,7 +53,7 @@ services:
     init: true
     stop_grace_period: 30s
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      - *config
       - /srv/ocr-archive/data:/data
       - /srv/ocr-archive/inbox:/inbox:ro
       - /srv/ocr-archive/export:/export

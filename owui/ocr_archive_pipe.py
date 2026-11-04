@@ -3297,10 +3297,13 @@ class Pipe:
         return bool(user_id) and str(user_id) in set(self.valves.allowed_user_ids)
 
     def _make_client(self) -> httpx.AsyncClient:
+        # trust_env=False: the backend is on the Docker network; HTTP_PROXY of the OpenWebUI
+        # container (set for its outbound traffic) must not route these requests to a proxy.
         return httpx.AsyncClient(
             base_url=self.valves.backend_url.rstrip("/"),
             headers={"X-API-Key": self.valves.api_key},
             timeout=HTTP_TIMEOUT_S,
+            trust_env=False,
         )
 
     def _make_files(self, request: Any, user: Mapping[str, Any]) -> OwuiFiles | None:
