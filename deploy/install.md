@@ -8,9 +8,10 @@
 
 ```
 --mmproj mmproj-BF16.gguf --image-max-tokens 6144 -np 2 \
---host 127.0.0.1 --port 8080 --api-key "$LLAMA_API_KEY" -c 32768
+--host 172.17.0.1 --port 8080 --api-key "$LLAMA_API_KEY" -c 32768
 ```
 
+- `--host 172.17.0.1` — адрес моста `docker0` (`ip addr show docker0`). Так llama-server доступен контейнеру api из сети OpenWebUI, воркеру и командам на хосте, но не с других интерфейсов хоста.
 - Если GPU не поддерживает BF16, взять `mmproj-F16.gguf`.
 - Если после добавления mmproj не хватает VRAM, увеличить `--n-cpu-moe`. Смотреть `nvidia-smi` на странице профиля pass2.
 - Фактическое число токенов картинки pass2 проверить в логе сервера. Оно должно быть не больше `--image-max-tokens`.
@@ -34,9 +35,12 @@ sha256sum /path/to/model.gguf /path/to/mmproj-BF16.gguf
 
 - В `config.yaml` заполнить `vlm.weights`: имена файлов и их sha256. Они входят в версию распознавания.
 - В `.env` задать длинные случайные `OCR_API_KEY` и `LLAMA_API_KEY`.
-- `api.host` — адрес моста Docker, обычно `172.17.0.1` (`ip addr show docker0`).
+- `api.host: 0.0.0.0` — api слушает внутри своего контейнера; снаружи он доступен только контейнерам сети `ollama_network` по имени `recognizer`.
+- `vlm.base_url: http://172.17.0.1:8080/v1` — адрес `docker0`, на котором слушает llama-server (шаг 1).
 
 ## 4. Сборка и запуск
+
+Сеть `ollama_network` в `compose.yaml` объявлена внешней: это сеть, к которой подключён контейнер OpenWebUI. Если её ещё нет: `docker network create ollama_network`.
 
 ```bash
 docker compose build --build-arg PANDOC_VERSION=3.5 --build-arg PANDOC_SHA256=<sha256 .deb>
@@ -55,9 +59,9 @@ docker compose run --rm worker ocr doctor --record-fingerprint
 
 ## 6. OpenWebUI
 
-1. У контейнера OpenWebUI: `extra_hosts: ["host.docker.internal:host-gateway"]`.
+1. Контейнер OpenWebUI должен быть в сети `ollama_network` (`networks: [ollama_network]` в его compose-файле). Контейнер api виден в ней по имени `recognizer`.
 2. Admin → Functions → добавить `owui/ocr_archive_pipe.py`. В Valves задать:
-   - `backend_url = http://host.docker.internal:8090`;
+   - `backend_url = http://recognizer:8090`;
    - `api_key` — значение `OCR_API_KEY`;
    - `allowed_user_ids` — id заказчика.
 3. Workspace → Models → «OCR-архив»:

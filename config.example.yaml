@@ -4,11 +4,11 @@ export_dir: /export                  # container path of the export folder, sect
 max_upload_mb: 1024
 
 api:
-  host: 172.17.0.1                   # Docker bridge address: the pipe in OpenWebUI is the client (section 3.3)
+  host: 0.0.0.0                      # inside the api container; OpenWebUI reaches it as http://recognizer:8090 (section 3.3)
   port: 8090
 
 vlm:
-  base_url: http://127.0.0.1:8080/v1
+  base_url: http://172.17.0.1:8080/v1   # docker0 address of the host: reachable from the api container, the worker and the host
   model: qwen3.6-35b-a3b
   weights:                           # declared at install time; part of the OCR version, section 6.11
     gguf_file: <model file name>

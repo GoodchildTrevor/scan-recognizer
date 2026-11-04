@@ -1,34 +1,44 @@
-# api and worker from one image, host network (section 12.4).
+# api and worker from one image (section 12.4).
+# The api joins the Docker network of OpenWebUI, which reaches it as http://recognizer:8090.
+# The worker stays on the host network: it talks only to llama-server and the local disks.
 # The data directory must be on a local Linux disk: flock and SQLite WAL do not work on NFS.
 
 x-common: &common
   image: ocr-archive:latest
-  network_mode: host
   env_file: .env
   restart: unless-stopped
+
+networks:
+  ollama_network:
+    external: true                 # the network OpenWebUI is attached to
 
 services:
   api:
     <<: *common
     build: .
     command: ["ocr", "serve"]
+    container_name: recognizer     # host name of the api inside ollama_network
+    networks:
+      - ollama_network
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - /srv/ocr-archive/data:/data
       - /srv/ocr-archive/inbox:/inbox:ro
     healthcheck:
-      # curl is not in the image; OCR_HEALTH_URL follows api.host/api.port of config.yaml.
+      # curl is not in the image; OCR_HEALTH_URL follows api.port of config.yaml.
+      # The check runs inside the api container, so it uses 127.0.0.1.
       test:
         - CMD
         - python
         - -c
-        - "import os, urllib.request; urllib.request.urlopen(os.environ.get('OCR_HEALTH_URL', 'http://172.17.0.1:8090/health'), timeout=5)"
+        - "import os, urllib.request; urllib.request.urlopen(os.environ.get('OCR_HEALTH_URL', 'http://127.0.0.1:8090/health'), timeout=5)"
       interval: 30s
       timeout: 10s
       retries: 3
 
   worker:
     <<: *common
+    network_mode: host
     command: ["ocr", "worker"]
     init: true
     stop_grace_period: 30s
