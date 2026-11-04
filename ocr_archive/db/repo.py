@@ -376,14 +376,24 @@ def retry_page(conn: sqlite3.Connection, page_id: int) -> bool:
 
 
 def reprocess_pages(
-    conn: sqlite3.Connection, document_id: str, *, include_reviewed: bool
+    conn: sqlite3.Connection,
+    document_id: str,
+    *,
+    include_reviewed: bool,
+    include_pdf_text: bool = False,
 ) -> list[int]:
-    """Send vlm pages back to pending with a new generation (section 6.11); return their ids."""
+    """Send vlm pages back to pending with a new generation (section 6.11); return their ids.
+
+    With ``include_pdf_text`` the text-layer pages go back too: their text is taken from the
+    PDF again, which a change of the extraction code requires.
+    """
     statuses = ["ok", "flagged", "failed"] + (["reviewed"] if include_reviewed else [])
+    tracks = ["vlm"] + (["pdf_text"] if include_pdf_text else [])
     rows = conn.execute(
-        f"SELECT id FROM pages WHERE document_id = ? AND track = 'vlm' "
+        f"SELECT id FROM pages WHERE document_id = ? "
+        f"AND track IN ({_placeholders(len(tracks))}) "
         f"AND status IN ({_placeholders(len(statuses))})",
-        (document_id, *statuses),
+        (document_id, *tracks, *statuses),
     ).fetchall()
     ids = [int(r["id"]) for r in rows]
     if not ids:

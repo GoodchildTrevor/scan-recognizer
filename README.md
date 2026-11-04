@@ -41,7 +41,7 @@ docker compose run --rm worker ocr doctor --record-fingerprint
 | `ocr draft <id>` | черновой DOCX без проверки |
 | `ocr ingest <id>` | загрузка в базу знаний (при `ingester.enabled`) |
 | `ocr redecide <id> \| --all` | перерешить собранные документы по текущим правилам |
-| `ocr reprocess <id> [--include-reviewed]` | распознать заново |
+| `ocr reprocess <id> [--include-reviewed] [--include-pdf-text]` | распознать заново; с `--include-pdf-text` — и текстовые страницы взять из PDF заново |
 | `ocr audit sample <id> [--n 10] [--track vlm\|pdf_text]` | выборочная проверка |
 | `ocr audit report [<id>]` | отчёт выборочной проверки |
 | `ocr pilot report <id>` | отчёт пилота |

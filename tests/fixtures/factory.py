@@ -274,6 +274,60 @@ def make_text_pdf_with_table(directory: Path) -> Path:
     return path
 
 
+#: Table rows of :func:`make_table_pdf_with_positioned_words`; the first row is the header.
+POSITIONED_TABLE = (
+    ("Имя", "Статус", "Дата"),
+    ("Тата", "Редактор по участникам", "06.04.2023"),
+    ("Ильдус", "Режиссёр", "Выслал вопросы 11.04.2023"),
+)
+
+
+def make_table_pdf_with_positioned_words(directory: Path) -> Path:
+    """A ruled table set the way some producers write text.
+
+    Every 9 pt glyph is positioned on its own and no space glyph is drawn; the full stops of
+    the dates are drawn after the digits, in another font and a larger size.
+    """
+    sans = pymupdf.Font(fontfile=str(SANS_FONT))
+    mono = pymupdf.Font(fontfile=str(MONO_FONT))
+    size, dot_size = 9.0, 14.0
+    doc = pymupdf.open()
+    page = doc.new_page(width=A4_PT[0], height=A4_PT[1])
+    col_widths = (110.0, 170.0, 200.0)
+    row_height = 20.0
+    for r, row in enumerate(POSITIONED_TABLE):
+        x = 60.0
+        for c, cell in enumerate(row):
+            rect = pymupdf.Rect(
+                x, 100.0 + r * row_height, x + col_widths[c], 100.0 + (r + 1) * row_height
+            )
+            page.draw_rect(rect, color=(0, 0, 0), width=0.7)
+            pen, baseline = rect.x0 + 3.0, rect.y1 - 6.0
+            dots: list[float] = []
+            for word in cell.split(" "):
+                for char in word:
+                    if char == ".":
+                        dots.append(pen)
+                        pen += mono.text_length(char, fontsize=dot_size)
+                        continue
+                    _insert_sans(page, (pen, baseline), char, fontsize=size)
+                    pen += sans.text_length(char, fontsize=size)
+                pen += sans.text_length(" ", fontsize=size)
+            for dot_x in dots:
+                page.insert_text(
+                    (dot_x, baseline),
+                    ".",
+                    fontname="mono",
+                    fontfile=str(MONO_FONT),
+                    fontsize=dot_size,
+                )
+            x += col_widths[c]
+    path = directory / "positioned_table.pdf"
+    doc.save(path)
+    doc.close()
+    return path
+
+
 def make_mojibake_pdf(directory: Path) -> Path:
     """Visible text whose Cyrillic was decoded as Latin-1 ("Ïðèâåò")."""
     source = "Протокол заседания технического совета завода, приказ номер 15."

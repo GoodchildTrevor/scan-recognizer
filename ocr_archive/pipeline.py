@@ -797,10 +797,16 @@ def redecide_document(document_id: str, ctx: PipelineContext) -> DocumentStatus:
 
 
 def reprocess_document(
-    document_id: str, ctx: PipelineContext, *, include_reviewed: bool = False
+    document_id: str,
+    ctx: PipelineContext,
+    *,
+    include_reviewed: bool = False,
+    include_pdf_text: bool = False,
 ) -> DocumentStatus:
     """Send vlm pages back to recognition with a new generation (section 6.11).
 
+    :param include_pdf_text: also take the text of text-layer pages from the PDF again, after
+        a change of the extraction code.
     :raises StatusTransitionError: ``document_building`` while the document is being built.
     :raises KeyError: unknown document.
     """
@@ -812,7 +818,12 @@ def reprocess_document(
                 raise KeyError(document_id)
             if doc["status"] == DocumentStatus.BUILDING:
                 raise StatusTransitionError("document_building")
-            repo.reprocess_pages(conn, document_id, include_reviewed=include_reviewed)
+            repo.reprocess_pages(
+                conn,
+                document_id,
+                include_reviewed=include_reviewed,
+                include_pdf_text=include_pdf_text,
+            )
             return recompute_status(conn, document_id, ctx.rules_version, force=True)
     finally:
         conn.close()

@@ -9,6 +9,7 @@ import pytest
 from tests.owui.helpers import (
     USER_ID,
     Emitter,
+    FakeFiles,
     FakeService,
     PipeForTest,
     op,
@@ -224,3 +225,74 @@ async def test_allowed_user_ids_tolerates_the_valves_form() -> None:
     assert await run_pipe(pipe, "что в очереди") != op.msg("access_denied")
     pipe.valves.allowed_user_ids = ["other-user"]
     assert await run_pipe(pipe, "что в очереди") == op.msg("access_denied")
+
+
+def test_user_text_ignores_blocks_openwebui_adds() -> None:
+    attached = (
+        '<attached_files>\n<file type="file" id="26281459" url="26281459" '
+        'content_type="application/pdf" name="Голос. Интервью.pdf"/>\n</attached_files>\n'
+    )
+    body = {"messages": [{"role": "user", "content": attached + "файлы Голос. Интервью"}]}
+    assert op.parse_command(op.last_user_text(body)) == op.Command("files", "голос интервью")
+    rag = (
+        "### Task:\nRespond to the user query using the provided context.\n"
+        '<context>\n<source id="1">текст страницы</source>\n</context>\n'
+        "<user_query>\nЧто в очереди\n</user_query>"
+    )
+    body = {"messages": [{"role": "user", "content": [{"type": "text", "text": rag}]}]}
+    assert op.parse_command(op.last_user_text(body)).kind == "queue"
+    body = {"messages": [{"role": "user", "content": attached}]}
+    assert op.last_user_text(body) == ""
+
+
+async def test_uploading_a_done_document_again_returns_its_files() -> None:
+    service = FakeService()
+    service.add_document(
+        "d1",
+        "Старый отчёт",
+        status="done",
+        source_name="old.pdf",
+        builds=[{"id": 1, "kind": "final", "version": 2, "status": "done"}],
+    )
+    files = FakeFiles()
+    emitter = Emitter()
+    pipe = PipeForTest(service, files)
+    reply = await run_pipe(
+        pipe, "", files=[attachment("old.pdf", "application/pdf")], emitter=emitter
+    )
+    assert "Уже есть: «Старый отчёт», готово." in reply
+    assert "Файлы «Старый отчёт», версия 2." in reply
+    assert [f.name for f in files.stored] == ["Старый отчёт.pdf", "Старый отчёт.docx"]
+    assert len(emitter.of_type("files")) == 1
+    assert service.delivered == [("d1", 2)]
+
+
+async def test_fast_document_files_arrive_in_the_upload_reply() -> None:
+    service = FakeService()
+    service.create_extra = {
+        "eta_sec": 1,
+        "status_sequence": ["processing", "ready", "done"],
+        "builds": [{"id": 1, "kind": "final", "version": 1, "status": "done"}],
+    }
+    files = FakeFiles()
+    pipe = PipeForTest(service, files)
+    pipe.valves.upload_wait_s = 5
+    reply = await run_pipe(
+        pipe, "", files=[attachment("text.pdf", "application/pdf")], emitter=Emitter()
+    )
+    assert reply.startswith("В очереди: «text»")
+    assert "Файлы «text», версия 1." in reply
+    assert [f.name for f in files.stored] == ["text.pdf", "text.docx"]
+    assert service.delivered == [("doc1", 1)]
+
+
+async def test_slow_document_is_not_waited_for() -> None:
+    service = FakeService()  # eta_sec of a new document is 3600
+    files = FakeFiles()
+    pipe = PipeForTest(service, files)
+    pipe.valves.upload_wait_s = 5
+    reply = await run_pipe(
+        pipe, "", files=[attachment("scan.pdf", "application/pdf")], emitter=Emitter()
+    )
+    assert reply.startswith("В очереди: «scan»")
+    assert files.stored == [] and service.delivered == []

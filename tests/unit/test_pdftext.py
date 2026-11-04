@@ -79,3 +79,12 @@ def test_caption_under_the_table_is_kept(markdown: str) -> None:
 
     assert blocks[table_index + 1] == factory.TEXT_PDF_CAPTION
     assert blocks[-1] == factory.TEXT_PDF_AFTER
+
+
+def test_positioned_words_keep_their_spaces_and_full_stops(tmp_path: Path) -> None:
+    markdown = pdf_text_markdown(factory.make_table_pdf_with_positioned_words(tmp_path), 0)
+
+    lines = markdown.splitlines()
+    assert lines[0] == "| Имя | Статус | Дата |"
+    assert lines[2] == "| Тата | Редактор по участникам | 06.04.2023 |"
+    assert lines[3] == "| Ильдус | Режиссёр | Выслал вопросы 11.04.2023 |"

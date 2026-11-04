@@ -12,8 +12,9 @@ from ocr_archive.lines import lines_version
 from ocr_archive.settings import Settings
 from ocr_archive.vlm import FRAGMENT_PROMPT, load_prompt
 
-#: Bump on any change of rendering or splitting code: it requires a new recognition.
-OCR_IMPL_VERSION = "1"
+#: Bump on any change of rendering, splitting or text-layer extraction code: it requires a new
+#: recognition (``ocr reprocess``, with ``--include-pdf-text`` for text-layer pages).
+OCR_IMPL_VERSION = "2"
 #: Bump on any change of comparison, signal or hint code: it requires only re-deciding.
 RULES_IMPL_VERSION = "1"
 

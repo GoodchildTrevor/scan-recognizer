@@ -135,6 +135,7 @@ MESSAGES_RU: dict[str, str] = {
     "status_review": "проверка: {pos} из {total}",
     "status_building_docs": "собираю: {docs}",
     "status_draft": "собираю черновик «{title}»",
+    "status_upload_wait": "жду «{title}»: {status}",
     "review_paused": "Проверка приостановлена, осталось {left}.",
     "review_paused_unknown": "Проверка приостановлена.",
     "review_done": "Проверено {pages}, готово {docs}, в очереди {left}.",
@@ -303,6 +304,27 @@ def task_stub(task: str) -> str:
     return json.dumps(stub, ensure_ascii=False)
 
 
+_USER_QUERY_RE = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.DOTALL | re.IGNORECASE)
+_INJECTED_BLOCK_RE = re.compile(
+    r"<(attached_files|context|source|sources)\b[^>]*>.*?</\1\s*>", re.DOTALL | re.IGNORECASE
+)
+
+
+def user_query(content: str) -> str:
+    """Return what the user typed, without the blocks OpenWebUI adds around it.
+
+    OpenWebUI inserts an ``<attached_files>`` block for files of the chat and, depending on the
+    version and settings, the RAG prompt with ``<context>`` and ``<user_query>`` blocks.
+
+    :param content: Content of the user message.
+    :return: The user's own text.
+    """
+    match = _USER_QUERY_RE.search(content)
+    if match:
+        return match.group(1)
+    return _INJECTED_BLOCK_RE.sub(" ", content).strip()
+
+
 def last_user_text(body: Mapping[str, Any]) -> str:
     """Return the text of the last user message in an OpenWebUI request body."""
     for message in reversed(body.get("messages") or []):
@@ -310,12 +332,14 @@ def last_user_text(body: Mapping[str, Any]) -> str:
             continue
         content = message.get("content")
         if isinstance(content, str):
-            return content
+            return user_query(content)
         if isinstance(content, list):
-            return " ".join(
-                str(part.get("text", ""))
-                for part in content
-                if isinstance(part, Mapping) and part.get("type") == "text"
+            return user_query(
+                " ".join(
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, Mapping) and part.get("type") == "text"
+                )
             )
         return ""
     return ""
@@ -932,6 +956,9 @@ class PipeContext:
     emitter: EventEmitter | None
     files: OwuiFiles | None
     poll_s: float = BUILD_POLL_S
+    #: After an upload, wait this long for a fast document (text PDF) to finish and attach
+    #: its files in the same reply; 0 answers at once.
+    upload_wait_s: int = 0
 
 
 def _data_uri(data: bytes) -> str:
@@ -1035,6 +1062,37 @@ async def wait_builds(ctx: PipeContext, documents: Mapping[str, str]) -> list[st
         )
         await asyncio.sleep(min(ctx.poll_s, remaining))
     return finished
+
+
+async def wait_document(
+    ctx: PipeContext, document_id: str, title: str, timeout_s: float
+) -> str | None:
+    """Wait for a just uploaded document to finish, at most ``timeout_s``.
+
+    The wait stops early when the service's ETA is beyond the timeout: a scanned document of
+    hundreds of pages should not hold the reply for nothing.
+
+    :param ctx: Pipe context.
+    :param document_id: Document ID.
+    :param title: Title for the status line.
+    :param timeout_s: Longest wait in seconds.
+    :return: The last status seen, or ``None`` when the service did not answer.
+    """
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        try:
+            doc = await ctx.client.get_document(document_id)
+        except ServiceError:
+            return None
+        status = str(doc.get("status") or "")
+        remaining = deadline - time.monotonic()
+        if status not in ("queued", "processing", "ready", "building") or remaining <= 0:
+            return status
+        eta = doc.get("eta_sec")
+        if status in ("queued", "processing") and isinstance(eta, int | float) and eta > remaining:
+            return status
+        await ctx.out.status(msg("status_upload_wait", title=title, status=status_name(status)))
+        await asyncio.sleep(min(ctx.poll_s, remaining))
 
 
 # ---- review session (sections 8 and 14) ----

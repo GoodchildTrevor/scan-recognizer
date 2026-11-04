@@ -82,6 +82,7 @@ class FakeService:
     errors: dict[tuple[str, str], list[tuple[int, str]]] = field(default_factory=dict)
     summary_extra: dict[str, Any] = field(default_factory=dict)
     images: dict[int, bytes] = field(default_factory=dict)
+    create_extra: dict[str, Any] = field(default_factory=dict)  # merged into uploaded documents
     ingest_enabled: bool = True
     region_text: str = "[область]"
     next_revision: int = 100
@@ -250,6 +251,7 @@ class FakeService:
             doc_id, Path(first).stem, status="queued", source_name=first, eta_sec=3600
         )
         self.documents[doc_id]["page_count"] = 214
+        self.documents[doc_id].update(self.create_extra)
         return httpx.Response(201, json={**_doc_brief(self.documents[doc_id]), "duplicate": False})
 
     def _list(self, m: re.Match[str], p: dict[str, str], body: Any) -> httpx.Response:
@@ -702,6 +704,7 @@ class PipeForTest(op.Pipe):
         self.files = files or FakeFiles()
         self.valves.allowed_user_ids = [USER_ID]
         self.valves.api_key = "secret"
+        self.valves.upload_wait_s = 0  # tests of the wait set it explicitly
 
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(

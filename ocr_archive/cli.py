@@ -233,6 +233,9 @@ def redecide(
 def reprocess(
     document_id: str,
     include_reviewed: Annotated[bool, typer.Option(help="Also drop manual revisions.")] = False,
+    include_pdf_text: Annotated[
+        bool, typer.Option(help="Also take the text of text-layer pages from the PDF again.")
+    ] = False,
 ) -> None:
     """Recognize a document again with a new request to the model (section 6.11)."""
     from ocr_archive.pipeline import reprocess_document
@@ -241,7 +244,10 @@ def reprocess(
     open_db(settings.database_path).close()
     try:
         status_value = reprocess_document(
-            document_id, _pipeline_ctx(settings), include_reviewed=include_reviewed
+            document_id,
+            _pipeline_ctx(settings),
+            include_reviewed=include_reviewed,
+            include_pdf_text=include_pdf_text,
         )
     except StatusTransitionError as err:
         raise _fail(err.code) from err

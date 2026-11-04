@@ -387,3 +387,27 @@ async def test_connection_errors_are_retried_without_limit(
         assert await process_page(ids[0], ctx) == PageStatus.PENDING
     row = page_row(conn, ids[0])
     assert row["status"] == PageStatus.PENDING and row["retry_count"] == attempts
+
+
+async def test_reprocess_takes_pdf_text_pages_only_on_request(
+    conn, settings, tmp_path: Path, fake_vlm: FakeVlm
+) -> None:
+    pdf = make_text_pdf_with_table(tmp_path)
+    created = create_document(conn, settings, [SourceFile("text.pdf", pdf.read_bytes())])
+    worker = make_worker(conn, settings, fake_vlm)
+    await drain(worker)
+    page_id = int(repo.pages_of_document(conn, created.document_id)[0]["id"])
+    first_attempt = page_row(conn, page_id)["current_attempt_id"]
+
+    reprocess_document(created.document_id, worker.ctx)
+    assert page_row(conn, page_id)["status"] == PageStatus.OK
+
+    status = reprocess_document(created.document_id, worker.ctx, include_pdf_text=True)
+    assert status == DocumentStatus.PROCESSING
+    assert page_row(conn, page_id)["status"] == PageStatus.PENDING
+    await drain(worker)
+    row = page_row(conn, page_id)
+    assert row["status"] == PageStatus.OK
+    assert row["current_attempt_id"] != first_attempt
+    assert fake_vlm.calls == []
+    assert doc_status(conn, created.document_id) == DocumentStatus.READY

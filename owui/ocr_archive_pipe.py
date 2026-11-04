@@ -132,6 +132,7 @@ MESSAGES_RU: dict[str, str] = {
     "status_review": "проверка: {pos} из {total}",
     "status_building_docs": "собираю: {docs}",
     "status_draft": "собираю черновик «{title}»",
+    "status_upload_wait": "жду «{title}»: {status}",
     "review_paused": "Проверка приостановлена, осталось {left}.",
     "review_paused_unknown": "Проверка приостановлена.",
     "review_done": "Проверено {pages}, готово {docs}, в очереди {left}.",
@@ -300,6 +301,27 @@ def task_stub(task: str) -> str:
     return json.dumps(stub, ensure_ascii=False)
 
 
+_USER_QUERY_RE = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.DOTALL | re.IGNORECASE)
+_INJECTED_BLOCK_RE = re.compile(
+    r"<(attached_files|context|source|sources)\b[^>]*>.*?</\1\s*>", re.DOTALL | re.IGNORECASE
+)
+
+
+def user_query(content: str) -> str:
+    """Return what the user typed, without the blocks OpenWebUI adds around it.
+
+    OpenWebUI inserts an ``<attached_files>`` block for files of the chat and, depending on the
+    version and settings, the RAG prompt with ``<context>`` and ``<user_query>`` blocks.
+
+    :param content: Content of the user message.
+    :return: The user's own text.
+    """
+    match = _USER_QUERY_RE.search(content)
+    if match:
+        return match.group(1)
+    return _INJECTED_BLOCK_RE.sub(" ", content).strip()
+
+
 def last_user_text(body: Mapping[str, Any]) -> str:
     """Return the text of the last user message in an OpenWebUI request body."""
     for message in reversed(body.get("messages") or []):
@@ -307,12 +329,14 @@ def last_user_text(body: Mapping[str, Any]) -> str:
             continue
         content = message.get("content")
         if isinstance(content, str):
-            return content
+            return user_query(content)
         if isinstance(content, list):
-            return " ".join(
-                str(part.get("text", ""))
-                for part in content
-                if isinstance(part, Mapping) and part.get("type") == "text"
+            return user_query(
+                " ".join(
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, Mapping) and part.get("type") == "text"
+                )
             )
         return ""
     return ""
@@ -929,6 +953,9 @@ class PipeContext:
     emitter: EventEmitter | None
     files: OwuiFiles | None
     poll_s: float = BUILD_POLL_S
+    #: After an upload, wait this long for a fast document (text PDF) to finish and attach
+    #: its files in the same reply; 0 answers at once.
+    upload_wait_s: int = 0
 
 
 def _data_uri(data: bytes) -> str:
@@ -1032,6 +1059,37 @@ async def wait_builds(ctx: PipeContext, documents: Mapping[str, str]) -> list[st
         )
         await asyncio.sleep(min(ctx.poll_s, remaining))
     return finished
+
+
+async def wait_document(
+    ctx: PipeContext, document_id: str, title: str, timeout_s: float
+) -> str | None:
+    """Wait for a just uploaded document to finish, at most ``timeout_s``.
+
+    The wait stops early when the service's ETA is beyond the timeout: a scanned document of
+    hundreds of pages should not hold the reply for nothing.
+
+    :param ctx: Pipe context.
+    :param document_id: Document ID.
+    :param title: Title for the status line.
+    :param timeout_s: Longest wait in seconds.
+    :return: The last status seen, or ``None`` when the service did not answer.
+    """
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        try:
+            doc = await ctx.client.get_document(document_id)
+        except ServiceError:
+            return None
+        status = str(doc.get("status") or "")
+        remaining = deadline - time.monotonic()
+        if status not in ("queued", "processing", "ready", "building") or remaining <= 0:
+            return status
+        eta = doc.get("eta_sec")
+        if status in ("queued", "processing") and isinstance(eta, int | float) and eta > remaining:
+            return status
+        await ctx.out.status(msg("status_upload_wait", title=title, status=status_name(status)))
+        await asyncio.sleep(min(ctx.poll_s, remaining))
 
 
 # ---- review session (sections 8 and 14) ----
@@ -3152,19 +3210,27 @@ class _Commands:
             out.write(msg("upload_failed", name=group[0].name, error=err.detail))
             return
         title = str(created.get("title", group[0].name))
+        document_id = str(created["id"])
         if created.get("duplicate"):
             out.write(msg("duplicate", title=title, status=status_name(created.get("status"))))
+            if created.get("status") == "done":
+                # The same file again: the files are already built, hand them over.
+                await self._deliver_document(document_id, title)
             return
         pages = count_phrase(int(created.get("page_count") or 0), "forms_pages")
         eta: float | None = None
         try:
-            eta = (await self._client.get_document(str(created["id"]))).get("eta_sec")
+            eta = (await self._client.get_document(document_id)).get("eta_sec")
         except ServiceError:
-            logger.info("no ETA for %s", created.get("id"))
+            logger.info("no ETA for %s", document_id)
         if eta:
             out.write(msg("queued", title=title, pages=pages, eta=format_clock(float(eta))))
         else:
             out.write(msg("queued_no_eta", title=title, pages=pages))
+        if self._ctx.upload_wait_s > 0:
+            status = await wait_document(self._ctx, document_id, title, self._ctx.upload_wait_s)
+            if status == "done":
+                await self._deliver_document(document_id, title)
 
     async def review(self, command: Command) -> None:
         await ReviewSession(self._ctx).run_queue()
@@ -3178,8 +3244,11 @@ class _Commands:
         doc = await self._resolve(command.query)
         if doc is None:
             return
-        title = str(doc.get("title", ""))
-        details = await self._client.get_document(str(doc["id"]))
+        await self._deliver_document(str(doc["id"]), str(doc.get("title", "")))
+
+    async def _deliver_document(self, document_id: str, title: str) -> None:
+        """Attach the latest final build of a document to the chat and confirm the delivery."""
+        details = await self._client.get_document(document_id)
         versions = [
             int(b["version"])
             for b in details.get("builds") or []
@@ -3189,13 +3258,13 @@ class _Commands:
             self._ctx.out.write(msg("files_none", title=title))
             return
         version = max(versions)
-        if not await deliver_build(self._ctx, str(doc["id"]), version=version):
+        if not await deliver_build(self._ctx, document_id, version=version):
             self._ctx.out.write(msg("delivery_failed", title=title))
             return
         try:
-            await self._client.mark_delivered(str(doc["id"]), version)
+            await self._client.mark_delivered(document_id, version)
         except ServiceError:
-            logger.warning("delivery confirmation of %s failed", doc["id"])
+            logger.warning("delivery confirmation of %s failed", document_id)
         self._ctx.out.write(msg("files_delivered", title=title, version=version))
 
     async def draft(self, command: Command) -> None:
@@ -3280,6 +3349,9 @@ class Pipe:
         allowed_user_ids: list[str] = Field(default_factory=list)
         build_wait_s: int = Field(default=900)
         autosave_idle_s: int = Field(default=10)
+        # Seconds to wait after an upload for a fast document to finish; its files are then
+        # attached in the same reply. A scanned document with a longer ETA is not waited for.
+        upload_wait_s: int = Field(default=60)
 
     class UserValves(BaseModel):
         """Per-user settings."""
@@ -3357,6 +3429,7 @@ class Pipe:
                     emitter=__event_emitter__,
                     files=self._make_files(__request__, user),
                     poll_s=self.build_poll_s,
+                    upload_wait_s=self.valves.upload_wait_s,
                 )
                 await _Commands(ctx, client, user).run(command, __files__)
         except ServiceUnavailableError:

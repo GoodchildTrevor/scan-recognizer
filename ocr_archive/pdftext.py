@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf
+from pymupdf.table import Table
 
 from ocr_archive.models import FastTrackCheck, PageTrack, TextLayer
 from ocr_archive.pdfpages import image_area_share
@@ -15,6 +17,10 @@ from ocr_archive.settings import FastTrackConfig
 logger = logging.getLogger(__name__)
 
 _FONT_NAME_NOISE = re.compile(r"[\s_\-]+")
+# A gap between two glyphs wider than this share of the font size is a word space.
+_SPACE_GAP = 0.15
+# Two glyphs whose baselines differ by less than this share of the font size are on one line.
+_BASELINE_TOLERANCE = 0.4
 
 
 def _is_bad_char(char: str) -> bool:
@@ -100,6 +106,109 @@ def _center_inside(bbox: tuple[float, float, float, float], rects: list[pymupdf.
     return any(rect.x0 <= x <= rect.x1 and rect.y0 <= y <= rect.y1 for rect in rects)
 
 
+@dataclass(frozen=True, slots=True)
+class _Char:
+    """A visible character of a page: its box, its baseline and the font size it is set in."""
+
+    text: str
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    baseline: float
+    size: float
+    upright: bool
+
+    def inside(self, rect: tuple[float, float, float, float]) -> bool:
+        """Whether the center of the box lies in ``rect``, as ``Table.extract`` decides it."""
+        x = (self.x0 + self.x1) / 2.0
+        y = (self.y0 + self.y1) / 2.0
+        return rect[0] <= x < rect[2] and rect[1] <= y < rect[3]
+
+
+def _page_chars(page: pymupdf.Page) -> list[_Char]:
+    chars: list[_Char] = []
+    for block in page.get_text("rawdict")["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block["lines"]:
+            upright = abs(line["dir"][1]) < 0.1
+            for span in line["spans"]:
+                size = float(span["size"])
+                for char in span["chars"]:
+                    if char["c"].isspace():
+                        continue  # spaces, real or inserted by MuPDF, follow from the gaps
+                    x0, y0, x1, y1 = char["bbox"]
+                    baseline = float(char["origin"][1])
+                    chars.append(_Char(char["c"], x0, y0, x1, y1, baseline, size, upright))
+    return chars
+
+
+def _text_lines(chars: list[_Char]) -> list[str]:
+    """Join characters into lines by their baselines and the gaps between them.
+
+    ``Table.extract`` groups characters by the top of their boxes with a fixed tolerance of
+    3 pt and inserts a space only for a gap wider than 3 pt. A full stop set in another font
+    then lands on a line of its own ("06042023 . ."), and 9-11 pt text whose words are
+    positioned one by one, without space glyphs, loses its spaces. Here the baseline decides
+    the line and the gap is measured against the font size. Space characters are not taken
+    from the page: MuPDF inserts them for its own lines, which it builds in drawing order, so
+    digits drawn before their full stops get a space where the full stop belongs.
+    """
+    lines: list[list[_Char]] = []
+    for char in sorted(chars, key=lambda item: (item.baseline, item.x0)):
+        if lines:
+            first = lines[-1][0]
+            tolerance = _BASELINE_TOLERANCE * max(char.size, first.size)
+            if abs(char.baseline - first.baseline) <= tolerance:
+                lines[-1].append(char)
+                continue
+        lines.append([char])
+    texts: list[str] = []
+    for line in lines:
+        line.sort(key=lambda item: item.x0)
+        parts: list[str] = []
+        previous: _Char | None = None
+        for char in line:
+            if previous is not None and char.x0 - previous.x1 > _SPACE_GAP * max(
+                char.size, previous.size
+            ):
+                parts.append(" ")
+            parts.append(char.text)
+            previous = char
+        text = " ".join("".join(parts).split())
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _table_rows(table: Table, chars: list[_Char]) -> list[list[str | None]]:
+    """Cell texts of a table, ``None`` for a cell merged into its neighbour.
+
+    Characters are assigned to cells the way ``Table.extract`` does it, by the center of their
+    box; the text of a cell is then rebuilt by :func:`_text_lines`. A cell with rotated text
+    keeps the text of ``Table.extract``, which handles the rotation.
+    """
+    extracted: list[list[str | None]] | None = None
+    rows: list[list[str | None]] = []
+    for row_index, row in enumerate(table.rows):
+        row_chars = [char for char in chars if char.inside(row.bbox)]
+        cells: list[str | None] = []
+        for cell_index, cell in enumerate(row.cells):
+            if cell is None:
+                cells.append(None)
+                continue
+            cell_chars = [char for char in row_chars if char.inside(cell)]
+            if all(char.upright for char in cell_chars):
+                cells.append("\n".join(_text_lines(cell_chars)))
+                continue
+            if extracted is None:
+                extracted = table.extract()
+            cells.append(extracted[row_index][cell_index])
+        rows.append(cells)
+    return rows
+
+
 def pdf_text_markdown(pdf_path: Path, page_index: int) -> str:
     """Extract the visible text of a page in the model answer format (section 7).
 
@@ -115,9 +224,11 @@ def pdf_text_markdown(pdf_path: Path, page_index: int) -> str:
     with pymupdf.open(pdf_path) as doc:
         page = doc[page_index]
         table_rects: list[pymupdf.Rect] = []
-        for table in page.find_tables().tables:
+        tables = page.find_tables().tables
+        chars = _page_chars(page) if tables else []
+        for table in tables:
             rect = pymupdf.Rect(table.bbox)
-            markdown = _pipe_table(table.extract())
+            markdown = _pipe_table(_table_rows(table, chars))
             if markdown:
                 table_rects.append(rect)
                 items.append((rect.y0, rect.x0, markdown))
