@@ -18,6 +18,8 @@ vlm:
   timeout_s: 900
   max_backoff_s: 300
 
+# Every request carries temperature, top_p and the repetition penalties (presence 0, frequency 0,
+# repeat 1.0): the defaults of llama-server or a proxy do not affect the recognition.
 profiles:
   pass1:  {prompt: transcribe_v1, image_long_side: 2000, max_tokens: 6000, temperature: 0.0, top_p: 1.0, top_logprobs: 1}
   pass2:  {prompt: transcribe_v1, image_long_side: 2800, max_tokens: 6000, temperature: 0.0, top_p: 1.0, top_logprobs: 1, split: auto}   # split: auto (section 6.7) | never

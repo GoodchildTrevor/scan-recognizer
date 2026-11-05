@@ -55,6 +55,12 @@ class ProfileConfig(_Block):
     temperature: float = 0.0
     top_p: float = 1.0
     top_logprobs: int = 1
+    # Repetition penalties punish every token that already occurred in the answer; on a page
+    # of text they replace repeated words and digits. They are sent with every request so the
+    # defaults of llama-server (models.ini) or of a proxy cannot change the recognition.
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    repeat_penalty: float = 1.0  # llama.cpp extension, 1.0 means off
     split: Literal["auto", "never"] | None = None
 
 
