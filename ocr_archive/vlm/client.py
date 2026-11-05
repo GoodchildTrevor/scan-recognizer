@@ -23,6 +23,10 @@ from ocr_archive.vlm.logprobs import parse_logprobs
 logger = logging.getLogger(__name__)
 
 _TRANSIENT_STATUS = frozenset({502, 503, 504})
+# Error texts of a model that is not loaded at the moment: llama-server while it loads one, and
+# its router mode after another model pushed ours out of memory and the reload has not happened
+# yet (LiteLLM relays it as HTTP 500 "model ... failed to load"). The page is retried later.
+_TRANSIENT_TEXTS = ("loading model", "failed to load", "is loading", "being loaded")
 
 
 def _is_context_error(status_code: int, body: str) -> bool:
@@ -97,7 +101,8 @@ class VlmClient:
     async def chat(self, body: dict[str, Any]) -> dict[str, Any]:
         """Send a chat completion request and return the parsed JSON.
 
-        :raises VlmTransportError: timeout, connection error, 502/503/504 or "loading model".
+        :raises VlmTransportError: timeout, connection error, 502/503/504 or a model that is
+            not loaded right now ("loading model", "failed to load").
         :raises VlmRequestError: any other HTTP error; ``context_exceeded`` for a context overflow.
         :raises VlmInvalidResponseError: the body is not JSON.
         """
@@ -108,8 +113,9 @@ class VlmClient:
         except httpx.TransportError as err:
             raise VlmTransportError(f"connection error: {err.__class__.__name__}") from err
         text = response.text
+        lowered = text.lower()
         if response.status_code in _TRANSIENT_STATUS or (
-            response.status_code >= 400 and "loading model" in text.lower()
+            response.status_code >= 400 and any(marker in lowered for marker in _TRANSIENT_TEXTS)
         ):
             raise VlmTransportError(f"server unavailable: HTTP {response.status_code}")
         if response.status_code >= 400:
